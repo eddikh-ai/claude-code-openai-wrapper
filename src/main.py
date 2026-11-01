@@ -1113,6 +1113,7 @@ async def generate_streaming_response(
 
         # Function calling: inject tool definitions into system prompt
         has_tools = request.tools and len(request.tools) > 0
+        tool_calls_emitted = False
         if has_tools:
             tools_dicts = [t.model_dump() for t in request.tools]
             tools_prompt = build_tools_system_prompt(tools_dicts, request.tool_choice)
@@ -1337,7 +1338,13 @@ async def generate_streaming_response(
                 role_sent = True
             if parsed_calls:
                 formatted = format_tool_calls(parsed_calls)
-                tc_delta = {"tool_calls": [tc.model_dump() for tc in formatted]}
+                # Streaming tool_call deltas must carry an index (OpenAI spec);
+                # clients accumulate argument fragments by it.
+                tc_delta = {
+                    "tool_calls": [
+                        {"index": i, **tc.model_dump()} for i, tc in enumerate(formatted)
+                    ]
+                }
                 if remaining_text.strip():
                     tc_delta["content"] = remaining_text.strip()
                 tc_chunk = ChatCompletionStreamResponse(
@@ -1347,6 +1354,7 @@ async def generate_streaming_response(
                 )
                 yield f"data: {tc_chunk.model_dump_json()}\n\n"
                 content_sent = True
+                tool_calls_emitted = True
             elif combined.strip():
                 text_chunk = ChatCompletionStreamResponse(
                     id=request_id,
@@ -1531,7 +1539,13 @@ async def generate_streaming_response(
         final_chunk = ChatCompletionStreamResponse(
             id=request_id,
             model=request.model,
-            choices=[StreamChoice(index=0, delta={}, finish_reason="stop")],
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta={},
+                    finish_reason="tool_calls" if tool_calls_emitted else "stop",
+                )
+            ],
             usage=usage_data,
         )
         yield f"data: {final_chunk.model_dump_json()}\n\n"
