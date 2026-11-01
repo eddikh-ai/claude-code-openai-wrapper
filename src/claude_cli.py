@@ -296,6 +296,14 @@ class ClaudeCodeCLI:
                     options.allowed_tools = allowed_tools
                 if disallowed_tools:
                     options.disallowed_tools = disallowed_tools
+                if not allowed_tools:
+                    # No tools requested: give the CLI no built-in tools at all and
+                    # load no settings or MCP config. A denylist misses tools added in
+                    # newer CLI versions, which the model then runs itself instead of
+                    # returning tool_calls to the client.
+                    options.tools = []
+                    options.setting_sources = []
+                    options.strict_mcp_config = True
 
                 # Set permission mode (needed for tool execution in API context)
                 if permission_mode:
