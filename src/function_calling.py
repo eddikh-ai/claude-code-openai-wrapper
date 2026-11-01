@@ -17,7 +17,9 @@ _TOOL_CALL_FORMAT = """IMPORTANT: When you want to call a function, respond with
 ]
 ```
 
-You can call multiple functions in one response. Do not include any text outside the code block when calling functions."""
+You can call multiple functions in one response. Do not include any text outside the code block when calling functions.
+
+These functions are the only tools you have. You cannot run commands, read or write files, or browse the web yourself. To do any of that, call one of the functions above and wait for its result."""
 
 
 def build_tools_system_prompt(tools: list, tool_choice=None) -> str:
@@ -27,7 +29,7 @@ def build_tools_system_prompt(tools: list, tool_choice=None) -> str:
     if tool_choice == "none":
         return ""
 
-    parts = ["# Available Functions\n"]
+    parts = ["# Available Functions\n", "You have access to the following functions.\n"]
 
     for tool in tools:
         func = tool.get("function", {})
@@ -49,7 +51,53 @@ def build_tools_system_prompt(tools: list, tool_choice=None) -> str:
     return "\n".join(parts)
 
 
-def parse_tool_calls(response_text: str) -> tuple[list, str]:
+_INVOKE_RE = re.compile(
+    r'<(?:\w+:)?invoke\s+name="([^"]+)"\s*>(.*?)</(?:\w+:)?invoke>', re.DOTALL
+)
+_PARAM_RE = re.compile(
+    r'<(?:\w+:)?parameter\s+name="([^"]+)"\s*>(.*?)</(?:\w+:)?parameter>', re.DOTALL
+)
+_FUNCTION_CALLS_WRAPPER_RE = re.compile(r"</?(?:\w+:)?function_calls>")
+
+
+def _parse_param_value(raw: str):
+    value = raw.strip()
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value
+
+
+def _parse_invoke_blocks(response_text: str, tool_names) -> tuple[list, str]:
+    """Parse Claude's native <invoke name="..."><parameter ...> markup.
+
+    Without native tools, Claude often writes tool calls in the markup it was
+    trained on instead of the fenced JSON format. Only calls to functions the
+    client actually defined are accepted; anything else stays in the text.
+    """
+    calls = []
+    spans = []
+    for match in _INVOKE_RE.finditer(response_text):
+        name = match.group(1)
+        if name not in tool_names:
+            continue
+        arguments = {
+            p.group(1): _parse_param_value(p.group(2)) for p in _PARAM_RE.finditer(match.group(2))
+        }
+        calls.append({"name": name, "arguments": arguments})
+        spans.append(match.span())
+
+    if not calls:
+        return ([], response_text)
+
+    remaining = response_text
+    for start, end in reversed(spans):
+        remaining = remaining[:start] + remaining[end:]
+    remaining = _FUNCTION_CALLS_WRAPPER_RE.sub("", remaining).strip()
+    return (calls, remaining)
+
+
+def parse_tool_calls(response_text: str, tool_names=None) -> tuple[list, str]:
     # Primary: fenced tool_calls block
     pattern = r"```tool_calls\s*\n(.*?)```"
     match = re.search(pattern, response_text, re.DOTALL)
@@ -80,6 +128,12 @@ def parse_tool_calls(response_text: str) -> tuple[list, str]:
                 except json.JSONDecodeError:
                     continue
         logger.warning("Found bare JSON array marker but failed to parse")
+
+    # Fallback: Claude's native invoke markup, for functions the client defined
+    if tool_names:
+        calls, remaining = _parse_invoke_blocks(response_text, set(tool_names))
+        if calls:
+            return (calls, remaining)
 
     return ([], response_text)
 
