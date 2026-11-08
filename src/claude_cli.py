@@ -283,10 +283,13 @@ class ClaudeCodeCLI:
                 if model:
                     options.model = model
 
-                # Set system prompt - CLAUDE AGENT SDK STRUCTURED FORMAT
-                # Use structured format as per SDK documentation
+                # Set system prompt. Pass a plain string: the SDK only turns a str,
+                # or a dict of type "custom", "file" or "preset", into a CLI flag.
+                # The former {"type": "text"} dict matched none of them, so the
+                # caller's system prompt was silently dropped and the CLI ran with
+                # Claude Code's default prompt instead.
                 if system_prompt:
-                    options.system_prompt = {"type": "text", "text": system_prompt}
+                    options.system_prompt = system_prompt
                 else:
                     # Use Claude Code preset to maintain expected behavior
                     options.system_prompt = {"type": "preset", "preset": "claude_code"}

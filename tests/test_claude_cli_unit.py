@@ -662,7 +662,18 @@ class TestClaudeCodeCLIRunCompletion:
 
             assert len(captured_options) == 1
             opts = captured_options[0]
-            assert opts.system_prompt == {"type": "text", "text": "You are helpful"}
+            assert opts.system_prompt == "You are helpful"
+
+            # The prompt must actually reach the CLI. A {"type": "text"} dict built
+            # no flag at all, so the CLI silently ran with its default prompt.
+            from claude_agent_sdk._internal.transport.subprocess_cli import (
+                SubprocessCLITransport,
+            )
+
+            transport = SubprocessCLITransport(prompt="Hello", options=opts)
+            transport._cli_path = "claude"
+            cmd = transport._build_command()
+            assert cmd[cmd.index("--system-prompt") + 1] == "You are helpful"
 
     @pytest.mark.asyncio
     async def test_run_completion_with_model(self, cli_instance):
