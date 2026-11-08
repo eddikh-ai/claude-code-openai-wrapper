@@ -296,6 +296,11 @@ class ClaudeCodeCLI:
                     options.allowed_tools = allowed_tools
                 if disallowed_tools:
                     options.disallowed_tools = disallowed_tools
+				
+                if not allowed_tools:
+                    options.tools = []
+                    options.setting_sources = []
+                    options.strict_mcp_config = True
 
                 # Set permission mode (needed for tool execution in API context)
                 if permission_mode:

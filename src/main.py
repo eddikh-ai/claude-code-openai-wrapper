@@ -1113,14 +1113,19 @@ async def generate_streaming_response(
 
         # Function calling: inject tool definitions into system prompt
         has_tools = request.tools and len(request.tools) > 0
+        tool_calls_emitted = False
         if has_tools:
             tools_dicts = [t.model_dump() for t in request.tools]
+            tool_names = {t.get("function", {}).get("name") for t in tools_dicts}
             tools_prompt = build_tools_system_prompt(tools_dicts, request.tool_choice)
             if tools_prompt:
-                if system_prompt:
-                    system_prompt = f"{system_prompt}\n\n{tools_prompt}"
-                else:
-                    system_prompt = tools_prompt
+                # Put the definitions in the user turn: the Agent SDK treats the
+                # system slot as a persona and ignores contracts placed there.
+                prompt = f"{tools_prompt}\n\n{prompt}"
+                if not system_prompt:
+                    # None would load the claude_code preset, which describes Claude Code's
+                    # own tools (Bash etc.) and makes the model reach for those instead.
+                    system_prompt = "You are a helpful assistant."
                 logger.info(
                     f"Function calling (streaming): injected {len(request.tools)} tool definitions"
                 )
@@ -1322,7 +1327,7 @@ async def generate_streaming_response(
         # Handle tool call buffer: parse and emit tool_calls
         if has_tools and tool_call_buffer:
             combined = "".join(tool_call_buffer)
-            parsed_calls, remaining_text = parse_tool_calls(combined)
+            parsed_calls, remaining_text = parse_tool_calls(combined, tool_names)
             if not role_sent:
                 initial_chunk = ChatCompletionStreamResponse(
                     id=request_id,
@@ -1337,7 +1342,13 @@ async def generate_streaming_response(
                 role_sent = True
             if parsed_calls:
                 formatted = format_tool_calls(parsed_calls)
-                tc_delta = {"tool_calls": [tc.model_dump() for tc in formatted]}
+                # Streaming tool_call deltas must carry an index (OpenAI spec);
+                # clients accumulate argument fragments by it.
+                tc_delta = {
+                    "tool_calls": [
+                        {"index": i, **tc.model_dump()} for i, tc in enumerate(formatted)
+                    ]
+                }
                 if remaining_text.strip():
                     tc_delta["content"] = remaining_text.strip()
                 tc_chunk = ChatCompletionStreamResponse(
@@ -1347,6 +1358,7 @@ async def generate_streaming_response(
                 )
                 yield f"data: {tc_chunk.model_dump_json()}\n\n"
                 content_sent = True
+                tool_calls_emitted = True
             elif combined.strip():
                 text_chunk = ChatCompletionStreamResponse(
                     id=request_id,
@@ -1531,7 +1543,13 @@ async def generate_streaming_response(
         final_chunk = ChatCompletionStreamResponse(
             id=request_id,
             model=request.model,
-            choices=[StreamChoice(index=0, delta={}, finish_reason="stop")],
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta={},
+                    finish_reason="tool_calls" if tool_calls_emitted else "stop",
+                )
+            ],
             usage=usage_data,
         )
         yield f"data: {final_chunk.model_dump_json()}\n\n"
@@ -1761,12 +1779,16 @@ async def chat_completions(
             has_tools = request_body.tools and len(request_body.tools) > 0
             if has_tools:
                 tools_dicts = [t.model_dump() for t in request_body.tools]
+                tool_names = {t.get("function", {}).get("name") for t in tools_dicts}
                 tools_prompt = build_tools_system_prompt(tools_dicts, request_body.tool_choice)
                 if tools_prompt:
-                    if system_prompt:
-                        system_prompt = f"{system_prompt}\n\n{tools_prompt}"
-                    else:
-                        system_prompt = tools_prompt
+                    # Put the definitions in the user turn: the Agent SDK treats the
+                    # system slot as a persona and ignores contracts placed there.
+                    prompt = f"{tools_prompt}\n\n{prompt}"
+                    if not system_prompt:
+                        # None would load the claude_code preset, which describes Claude Code's
+                        # own tools (Bash etc.) and makes the model reach for those instead.
+                        system_prompt = "You are a helpful assistant."
                     logger.info(
                         f"Function calling: injected {len(request_body.tools)} tool definitions"
                     )
@@ -1859,7 +1881,7 @@ async def chat_completions(
             tool_calls_list = None
             finish_reason = "stop"
             if has_tools:
-                parsed_calls, remaining_text = parse_tool_calls(assistant_content)
+                parsed_calls, remaining_text = parse_tool_calls(assistant_content, tool_names)
                 if parsed_calls:
                     tool_calls_list = format_tool_calls(parsed_calls)
                     assistant_content = remaining_text.strip() if remaining_text.strip() else None
